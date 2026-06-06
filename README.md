@@ -23,9 +23,9 @@ PR [coollabsio/coolify#9822](https://github.com/coollabsio/coolify/pull/9822) ad
 
 Add a second service (Caddy or nginx) to the compose. The proxy is not a database image, so Coolify renders its Domains field and auto-allocates an FQDN through the standard magic-var path (e.g. `SERVICE_FQDN_CADDY_80`). The proxy terminates HTTPS at the Coolify-served FQDN and forwards to `http://couchdb:5984` on the internal compose network. CouchDB never gets a direct Traefik label, never gets exposed externally, and the user does no manual Coolify configuration. Trade-off: extra service in the stack, plus a small Caddyfile or nginx.conf checked into the repo.
 
-### Path C: Current compose, explicit Traefik labels, manual `FQDN` env var
+### Path C: Current compose, explicit Traefik labels, Coolify-conventional `SERVICE_FQDN_COUCHDB`
 
-`docker-compose.yaml` in this repo declares Traefik labels directly so Coolify's parser doesn't need to inject them, and references `${FQDN}` as a plain env var the user sets manually in Coolify's Environment Variables tab. Works on any Coolify ≥ v4.0.0-beta.411. Trade-off: one manual env var per deploy.
+`docker-compose.yaml` in this repo declares Traefik labels directly (Coolify's catalog auto-injection does not run on the build-pack path for database images) and references `${SERVICE_FQDN_COUCHDB}` in the `Host()` rule. `SERVICE_FQDN_COUCHDB` is the [documented Coolify magic-variable convention](https://coolify.io/docs/knowledge-base/environment-variables) (`SERVICE_FQDN_<IDENTIFIER>` returns the bare hostname, no port suffix because the var name has no `_PORT` segment). On first Reload Compose File, Coolify auto-allocates the value under your wildcard subdomain. To use a custom domain, edit that value in the Environment Variables tab to your bare hostname (no scheme, no port), e.g. `obs.example.com`.
 
 ## Compose alignment with PR #9822
 

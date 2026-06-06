@@ -4,49 +4,50 @@
 # tags: obsidian,couchdb,sync,notes,markdown
 # logo: svgs/obsidian-livesync.svg
 # port: 5984
+#
+# Two intentional deviations from upstream PR coollabsio/coolify#9822:
+#
+# 1. The PR inlines local.ini via `volumes: - type: bind ... content: |`. That
+#    `content:` field is a Coolify-only extension, not in the Docker Compose
+#    Spec. On Coolify v4.1.2 build-pack deploys, Coolify strips it, leaving
+#    a bare `./local.ini` bind that Docker creates as an empty directory and
+#    fails to mount. This file uses the Compose-Spec-standard `configs:` block
+#    with inline `content:` instead; Docker materialises it to a runtime file
+#    and mounts it. Verified locally: env interpolation inside `configs.content`
+#    works identically to the PR's `volumes.content` pattern.
+#
+# 2. The PR relies on Coolify's catalog code path to auto-inject Traefik
+#    routing labels from `SERVICE_FQDN_COUCHDB_5984`. Catalog deploys bypass
+#    Coolify's `isDatabaseImage('couchdb')` check that hides the per-service
+#    Domains UI for database images. On the build-pack path, the magic var
+#    allocates an FQDN value but no labels attach. This file declares Traefik
+#    labels explicitly, keyed off the Coolify-conventional `SERVICE_FQDN_COUCHDB`
+#    magic var (no port suffix, so the auto-allocated value is bare hostname).
+#    To use a custom domain instead of Coolify's wildcard-allocated subdomain,
+#    edit SERVICE_FQDN_COUCHDB in Coolify Env Vars to your hostname, e.g.
+#    `obs.example.com` (no scheme, no port).
 
 services:
   couchdb:
     image: couchdb:3.4.2
     environment:
-      # Tells Coolify to proxy this service on port 5984 at the assigned domain
-      - SERVICE_FQDN_COUCHDB_5984
-      # Coolify auto-generates and persists these — find them under Environment Variables
+      - SERVICE_FQDN_COUCHDB
       - COUCHDB_USER=${SERVICE_USER_COUCHDB}
       - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
-      # Max size of a single document (bytes). Default: 50MB.
       - MAX_DOCUMENT_SIZE=${MAX_DOCUMENT_SIZE:-52428800}
-      # Max HTTP request size (bytes). Should be slightly above MAX_DOCUMENT_SIZE to allow multipart overhead.
-      # Raise only if you attach very large files to your notes. Default: 64MB.
       - MAX_HTTP_REQUEST_SIZE=${MAX_HTTP_REQUEST_SIZE:-67108864}
-    volumes:
-      - type: bind
-        source: ./local.ini
+    configs:
+      - source: couchdb_local_ini
         target: /opt/couchdb/etc/local.ini
-        content: |
-          [couchdb]
-          single_node=true
-          max_document_size = ${MAX_DOCUMENT_SIZE}
-
-          [chttpd]
-          require_valid_user = true
-          max_http_request_size = ${MAX_HTTP_REQUEST_SIZE}
-
-          [chttpd_auth]
-          require_valid_user = true
-          authentication_redirect = /_utils/session.html
-
-          [httpd]
-          WWW-Authenticate = Basic realm="couchdb"
-          enable_cors = true
-
-          [cors]
-          origins = app://obsidian.md,capacitor://localhost,http://localhost
-          credentials = true
-          headers = accept, authorization, content-type, origin, referer
-          methods = GET, PUT, POST, HEAD, DELETE
-          max_age = 3600
+    volumes:
       - couchdb-data:/opt/couchdb/data
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.couchdb.rule=Host(`${SERVICE_FQDN_COUCHDB}`)
+      - traefik.http.routers.couchdb.entrypoints=https
+      - traefik.http.routers.couchdb.tls=true
+      - traefik.http.routers.couchdb.tls.certresolver=letsencrypt
+      - traefik.http.services.couchdb.loadbalancer.server.port=5984
     healthcheck:
       test:
         - CMD-SHELL
@@ -55,6 +56,32 @@ services:
       timeout: 10s
       start_period: 40s
       retries: 3
+
+configs:
+  couchdb_local_ini:
+    content: |
+      [couchdb]
+      single_node=true
+      max_document_size = ${MAX_DOCUMENT_SIZE:-52428800}
+
+      [chttpd]
+      require_valid_user = true
+      max_http_request_size = ${MAX_HTTP_REQUEST_SIZE:-67108864}
+
+      [chttpd_auth]
+      require_valid_user = true
+      authentication_redirect = /_utils/session.html
+
+      [httpd]
+      WWW-Authenticate = Basic realm="couchdb"
+      enable_cors = true
+
+      [cors]
+      origins = app://obsidian.md,capacitor://localhost,http://localhost
+      credentials = true
+      headers = accept, authorization, content-type, origin, referer
+      methods = GET, PUT, POST, HEAD, DELETE
+      max_age = 3600
 
 volumes:
   couchdb-data:
