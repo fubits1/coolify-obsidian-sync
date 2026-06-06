@@ -1,74 +1,90 @@
 # Obsidian Self-hosted LiveSync on Coolify
 
-CouchDB backend for the [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) Obsidian plugin, packaged for deployment via [Coolify](https://coolify.io). Derived from the upstream Coolify service template proposed in open PR [coollabsio/coolify#9822](https://github.com/coollabsio/coolify/pull/9822), with one documented deviation (see below). A standalone `docker-compose.local.yaml` covers OrbStack and plain Docker.
+CouchDB backend for the [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) Obsidian plugin, packaged for deployment via [Coolify](https://coolify.io). Derived from the upstream Coolify service template proposed in open PR [coollabsio/coolify#9822](https://github.com/coollabsio/coolify/pull/9822).
 
 This is not Obsidian's first-party paid Sync product (no self-hostable engine exists for that). Self-hosted LiveSync is the community plugin that replicates a vault to a CouchDB you control.
 
-## Why this deviates from upstream Coolify PR #9822
+## The fundamental wall: Coolify hides the Domains UI for CouchDB
 
-PR #9822 adds `obsidian-livesync` to Coolify's built-in service catalog (`templates/compose/`). Catalog deploys are a separate code path that processes `SERVICE_FQDN_X_PORT` / `SERVICE_USER_X` / `SERVICE_PASSWORD_X` magic env vars, auto-allocates an FQDN under the wildcard domain, and auto-injects Traefik routing labels onto the container.
+Verified in Coolify source:
 
-Deploying the same compose via the Docker Compose build pack (Public Repository or Docker Compose Empty) goes through a different path. Per [Coolify's compose docs](https://coolify.io/docs/knowledge-base/docker/compose): *"To use Coolify's Proxy (Traefik), you need to set the following labels to your application."* No magic-var auto-injection, no auto-FQDN, no auto-Traefik. The user supplies labels explicitly.
+- [`bootstrap/helpers/constants.php`](https://github.com/coollabsio/coolify/blob/main/bootstrap/helpers/constants.php) declares `const DATABASE_DOCKER_IMAGES = [..., 'couchdb', ...]`. The string `couchdb` is hard-coded as a database image.
+- [`resources/views/livewire/project/application/general.blade.php`](https://github.com/coollabsio/coolify/blob/main/resources/views/livewire/project/application/general.blade.php) at line 73 renders the per-service Domains/URL field only when `!isDatabaseImage($service.image)`. For `couchdb:3.4.2` that returns false, so the field is hidden.
 
-This repo therefore takes the catalog-style compose and adapts it for the build-pack path:
+Consequence: deploying this compose via Coolify Docker Compose Build Pack (Public Repository or Docker Compose Empty) on any current Coolify release surfaces no URL/Domains field for the `couchdb` service in the General tab, regardless of compose contents. Coolify deliberately suppresses HTTP routing UI for images it classifies as databases.
 
-1. **Explicit Traefik labels** route `Host(\`${FQDN}\`)` on `:5984` via the `letsencrypt`certresolver. The label scheme matches what working Coolify resources on this same host (`uptime-kuma`,`nocodb`) end up with after Coolify's catalog auto-injection.
-2. **`FQDN` is a plain env var**, set by the user in Coolify's Environment Variables tab, e.g. `FQDN=obsidian.example.com`. The `${FQDN:?...}` form blocks deploy until the var is set; no silent failure.
-3. **`local.ini` is a real file in this repo**, bind-mounted short-form. The PR uses `volumes: - type: bind ... content: |` to inline the INI. That `content:` field is not in the [Docker Compose Specification](https://github.com/compose-spec/compose-spec/blob/main/spec.md) and not in Coolify docs. Coolify v4.1.2 strips it from the Deployable Compose render. Shipping the file from git avoids the round-trip entirely.
-4. **`MAX_DOCUMENT_SIZE` / `MAX_HTTP_REQUEST_SIZE` env vars are dropped.** Without the `content:` templating, they were no-ops. Tune CouchDB sizes by editing `local.ini` directly.
+Three viable paths follow from this. Pick one.
 
-When PR #9822 merges and `obsidian-livesync` appears in Coolify's catalog dropdown, that path will Just Work via the magic vars. Until then, this repo is the build-pack equivalent.
+### Path A: Wait for PR #9822 to land in Coolify's catalog
 
-## What gets deployed
+PR [coollabsio/coolify#9822](https://github.com/coollabsio/coolify/pull/9822) adds `obsidian-livesync` to Coolify's built-in service catalog under `templates/compose/`. Catalog deploys go through a separate code path that does not call `isDatabaseImage`. When (if) it merges, deploying "Obsidian LiveSync" from Coolify's catalog dropdown works end-to-end with zero manual UI input. Currently the PR has unresolved Copilot AI review comments; no merge timeline.
 
-A single `couchdb:3.4.2` service with a `couchdb-data` named volume and a bind-mounted `local.ini`. No init sidecar. CouchDB applies `local.ini` on boot. Traefik labels in the compose tell Coolify's proxy which FQDN routes to which port.
+### Path B: Front CouchDB with a Caddy (or nginx) reverse proxy
 
-## Environment variables you set in Coolify
+Add a second service (Caddy or nginx) to the compose. The proxy is not a database image, so Coolify renders its Domains field and auto-allocates an FQDN through the standard magic-var path (e.g. `SERVICE_FQDN_CADDY_80`). The proxy terminates HTTPS at the Coolify-served FQDN and forwards to `http://couchdb:5984` on the internal compose network. CouchDB never gets a direct Traefik label, never gets exposed externally, and the user does no manual Coolify configuration. Trade-off: extra service in the stack, plus a small Caddyfile or nginx.conf checked into the repo.
 
-Coolify's Env Vars tab. These three plus nothing else.
+### Path C: Current compose, explicit Traefik labels, manual `FQDN` env var
 
-| Var | Required | Description |
-|---|---|---|
-| `FQDN` | yes | The domain Coolify's Traefik routes to this container, e.g. `obsidian.example.com`. Coolify creates a Let's Encrypt cert for it. |
-| `SERVICE_USER_COUCHDB` | optional | CouchDB admin user. Defaults to `admin` if unset. |
-| `SERVICE_PASSWORD_64_COUCHDB` | yes | CouchDB admin password. Generate via Coolify's "Generate Random Password" button or paste a strong one. |
+`docker-compose.yaml` in this repo declares Traefik labels directly so Coolify's parser doesn't need to inject them, and references `${FQDN}` as a plain env var the user sets manually in Coolify's Environment Variables tab. Works on any Coolify ≥ v4.0.0-beta.411. Trade-off: one manual env var per deploy.
 
-The compose references them as:
+## Compose alignment with PR #9822
+
+`docker-compose.yaml` mirrors the upstream PR's `templates/compose/obsidian-livesync.yaml` at head sha `e2dbf78e496b6fd6ca36a84381df6c5351b46fa6` byte-for-byte (modulo a trailing newline). That includes:
+
+- All catalog header comments (`# documentation:` ... `# port: 5984`).
+- The `SERVICE_FQDN_COUCHDB_5984` magic var marker.
+- `SERVICE_USER_COUCHDB` and `SERVICE_PASSWORD_64_COUCHDB` magic vars for credentials.
+- `MAX_DOCUMENT_SIZE` and `MAX_HTTP_REQUEST_SIZE` overrides with PR defaults.
+- The `volumes: - type: bind ... content: |` extension that inlines `local.ini`.
+- The healthcheck verbatim.
+
+`local.ini` is also shipped as a real file at the repo root, mirroring the PR's inline INI byte-for-byte. This is for local OrbStack validation (which does not honour Coolify's `content:` extension) and as a fallback Coolify can bind-mount if the `content:` extension is ever stripped.
+
+This alignment means: when PR #9822 lands in Coolify's catalog, deploying from the catalog dropdown will run this exact YAML through Coolify's catalog code path, which handles `isDatabaseImage` correctly (catalog deploys bypass the Domains-UI hide) and processes `SERVICE_FQDN_*` magic vars end-to-end. Path A becomes the trivial recommendation.
+
+Until that merges, deploying this compose via the Docker Compose build pack hits the database-image wall above. The compose stays canonical so a future catalog merge requires zero migration work.
+
+## Path B (reverse proxy) details
+
+Not implemented in this repo yet. Sketch:
 
 ```yaml
-environment:
-  - COUCHDB_USER=${SERVICE_USER_COUCHDB:-admin}
-  - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB:?set in Coolify Env Vars}
-labels:
-  - traefik.enable=true
-  - traefik.http.routers.couchdb.rule=Host(`${FQDN}`)
-  - traefik.http.routers.couchdb.entrypoints=https
-  - traefik.http.routers.couchdb.tls=true
-  - traefik.http.routers.couchdb.tls.certresolver=letsencrypt
-  - traefik.http.services.couchdb.loadbalancer.server.port=5984
+services:
+  caddy:
+    image: caddy:2
+    environment:
+      - SERVICE_FQDN_CADDY_80
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - couchdb
+  couchdb:
+    image: couchdb:3.4.2
+    # ... unchanged from canonical PR shape, minus SERVICE_FQDN_COUCHDB_5984 ...
+
+volumes:
+  caddy-data:
+  caddy-config:
+  couchdb-data:
 ```
 
-## Deploy on Coolify
+`Caddyfile`:
 
-1. New Resource → Public Repository → point at this repo, branch `main`, Docker Compose Location `/docker-compose.yaml`.
-2. **Save**. **Reload Compose File**. Coolify discovers the three referenced env vars (`FQDN`, `SERVICE_USER_COUCHDB`, `SERVICE_PASSWORD_64_COUCHDB`).
-3. Open **Environment Variables** tab. Set:
-   - `FQDN` = the domain Coolify's Traefik should serve, e.g. `obsidian.dadascience.design`. DNS for this host must point at the Coolify server.
-   - `SERVICE_PASSWORD_64_COUCHDB` = a strong password (use Coolify's "Generate Random Password" button).
-   - `SERVICE_USER_COUCHDB` = optional. Defaults to `admin`.
-4. **Deploy.** Wait for `couchdb` health (~40 s start period plus curl healthcheck).
-5. Confirm:
+```
+{$CADDY_FQDN} {
+    reverse_proxy couchdb:5984
+}
+```
 
-   ```
-   curl -i https://<your-FQDN>/
-   # 200 {"couchdb":"Welcome",...} or 401 (Traefik + TLS work; CouchDB demands auth)
-   ```
+The `SERVICE_FQDN_CADDY_80` magic var works because `caddy` is not in `DATABASE_DOCKER_IMAGES`. Coolify renders Caddy's Domains UI, auto-allocates an FQDN under the wildcard, terminates TLS at Caddy, forwards to `couchdb:5984` on the internal compose network. CouchDB stays private.
 
-Coolify reuses the env vars on redeploy. CouchDB hashes the admin password into `_users` on the `couchdb-data` volume. Do not regenerate the password in Coolify after first init or you will lose access. To rotate, change CouchDB's admin directly via Fauxton, then update Coolify env.
+This route requires a separate `docker-compose.path-b.yaml` (or similar) to keep `docker-compose.yaml` aligned with PR #9822. Open an issue or ask if you want it generated.
 
-### What about Coolify's "Links" panel?
+## Local validation with OrbStack
 
-Empty for this resource. The Links panel populates only for catalog Service Stack deploys, where Coolify auto-allocates an FQDN via the magic var. With this build-pack approach, you chose the FQDN yourself in the Env Vars tab. Use that value as the LiveSync plugin URI: `https://<your-FQDN>`.
+The local compose does not use Coolify's `content:` extension. It bind-mounts the on-disk `./local.ini` directly so plain Docker can parse it.
 
 ## Local validation with OrbStack
 

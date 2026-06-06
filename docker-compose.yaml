@@ -4,42 +4,48 @@
 # tags: obsidian,couchdb,sync,notes,markdown
 # logo: svgs/obsidian-livesync.svg
 # port: 5984
-#
-# Deploys obsidian-livesync's CouchDB backend on Coolify via the Docker Compose
-# build pack (Public Repository or Docker Compose Empty). Differs from upstream
-# PR coollabsio/coolify#9822 in two deliberate ways:
-#
-# 1. The PR is written for Coolify's built-in service catalog, where the
-#    `SERVICE_FQDN_COUCHDB_5984` magic env var auto-allocates an FQDN and
-#    auto-injects Traefik labels. Deploying the same compose via the Docker
-#    Compose build pack does NOT process those magic vars (per Coolify docs:
-#    "To use Coolify's Proxy (Traefik), you need to set the following labels").
-#    So this file declares the Traefik labels explicitly, parameterised by a
-#    plain `FQDN` env var that the user sets in the Coolify Env Vars tab.
-# 2. The PR uses `volumes: - type: bind ... content: |` (a field not in the
-#    Docker Compose Spec and not in Coolify docs) to inline local.ini. Coolify
-#    v4.1.2's parser strips that field. This repo ships local.ini as a real
-#    file in the repo and bind-mounts it the short form.
-#
-# See README.md for the full write-up.
 
 services:
   couchdb:
     image: couchdb:3.4.2
-    expose:
-      - "5984"
     environment:
-      - COUCHDB_USER=${SERVICE_USER_COUCHDB:-admin}
-      - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB:?set in Coolify Env Vars}
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.couchdb.rule=Host(`${FQDN:?set FQDN in Coolify Env Vars to your couchdb domain, e.g. obsidian.example.com}`)
-      - traefik.http.routers.couchdb.entrypoints=https
-      - traefik.http.routers.couchdb.tls=true
-      - traefik.http.routers.couchdb.tls.certresolver=letsencrypt
-      - traefik.http.services.couchdb.loadbalancer.server.port=5984
+      # Tells Coolify to proxy this service on port 5984 at the assigned domain
+      - SERVICE_FQDN_COUCHDB_5984
+      # Coolify auto-generates and persists these — find them under Environment Variables
+      - COUCHDB_USER=${SERVICE_USER_COUCHDB}
+      - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
+      # Max size of a single document (bytes). Default: 50MB.
+      - MAX_DOCUMENT_SIZE=${MAX_DOCUMENT_SIZE:-52428800}
+      # Max HTTP request size (bytes). Should be slightly above MAX_DOCUMENT_SIZE to allow multipart overhead.
+      # Raise only if you attach very large files to your notes. Default: 64MB.
+      - MAX_HTTP_REQUEST_SIZE=${MAX_HTTP_REQUEST_SIZE:-67108864}
     volumes:
-      - ./local.ini:/opt/couchdb/etc/local.ini
+      - type: bind
+        source: ./local.ini
+        target: /opt/couchdb/etc/local.ini
+        content: |
+          [couchdb]
+          single_node=true
+          max_document_size = ${MAX_DOCUMENT_SIZE}
+
+          [chttpd]
+          require_valid_user = true
+          max_http_request_size = ${MAX_HTTP_REQUEST_SIZE}
+
+          [chttpd_auth]
+          require_valid_user = true
+          authentication_redirect = /_utils/session.html
+
+          [httpd]
+          WWW-Authenticate = Basic realm="couchdb"
+          enable_cors = true
+
+          [cors]
+          origins = app://obsidian.md,capacitor://localhost,http://localhost
+          credentials = true
+          headers = accept, authorization, content-type, origin, referer
+          methods = GET, PUT, POST, HEAD, DELETE
+          max_age = 3600
       - couchdb-data:/opt/couchdb/data
     healthcheck:
       test:
