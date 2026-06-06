@@ -1,95 +1,62 @@
-# Obsidian Self-hosted LiveSync — CouchDB backend
-# Deploy target: Coolify (Docker Compose build pack, v4.0.0-beta.411+)
+# Obsidian Self-hosted LiveSync, CouchDB backend.
+# Mirrors the upstream-canonical Coolify service template (PR coollabsio/coolify#9822).
+# Deploy target: Coolify (Docker Compose build pack, v4.0.0-beta.411+).
+# For local OrbStack validation see docker-compose.local.yaml + ./local.ini + README.md.
 #
-# Coolify magic env vars in use:
-#   SERVICE_FQDN_COUCHDB_5984  -> auto-generates FQDN + Traefik route to container :5984
-#   SERVICE_USER_COUCHDB       -> random 16-char admin user (persisted across deploys)
-#   SERVICE_PASSWORD_COUCHDB   -> random password without symbols (persisted across deploys)
-#
-# For local OrbStack validation see docker-compose.local.yml and README.md.
+# Coolify magic env vars:
+#   SERVICE_FQDN_COUCHDB_5984    -> auto FQDN + Traefik route to container :5984
+#   SERVICE_USER_COUCHDB         -> 16-char admin user, persisted across redeploys
+#   SERVICE_PASSWORD_64_COUCHDB  -> 64-char admin password, persisted across redeploys
 
 services:
   couchdb:
-    image: couchdb:3.4
-    restart: unless-stopped
+    image: couchdb:3.4.2
     environment:
-      # Coolify reads this marker, assigns FQDN, injects Traefik labels for :5984.
-      # Locally docker-compose.local.yml provides a fallback value.
       - SERVICE_FQDN_COUCHDB_5984
       - COUCHDB_USER=${SERVICE_USER_COUCHDB}
-      - COUCHDB_PASSWORD=${SERVICE_PASSWORD_COUCHDB}
+      - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
+      # Single document size (bytes). Default 50 MB.
+      - MAX_DOCUMENT_SIZE=${MAX_DOCUMENT_SIZE:-52428800}
+      # HTTP request body size (bytes). Should sit slightly above MAX_DOCUMENT_SIZE. Default 64 MB.
+      - MAX_HTTP_REQUEST_SIZE=${MAX_HTTP_REQUEST_SIZE:-67108864}
     volumes:
+      # Coolify-specific extension: writes `content:` to a host file then bind-mounts it.
+      # Plain Docker and OrbStack ignore `content:`. The local override supplies ./local.ini directly.
+      - type: bind
+        source: ./local.ini
+        target: /opt/couchdb/etc/local.ini
+        content: |
+          [couchdb]
+          single_node=true
+          max_document_size = ${MAX_DOCUMENT_SIZE}
+
+          [chttpd]
+          require_valid_user = true
+          max_http_request_size = ${MAX_HTTP_REQUEST_SIZE}
+
+          [chttpd_auth]
+          require_valid_user = true
+          authentication_redirect = /_utils/session.html
+
+          [httpd]
+          WWW-Authenticate = Basic realm="couchdb"
+          enable_cors = true
+
+          [cors]
+          origins = app://obsidian.md,capacitor://localhost,http://localhost
+          credentials = true
+          headers = accept, authorization, content-type, origin, referer
+          methods = GET, PUT, POST, HEAD, DELETE
+          max_age = 3600
       - couchdb-data:/opt/couchdb/data
-      - couchdb-config:/opt/couchdb/etc/local.d
-    expose:
-      - "5984"
     healthcheck:
-      # Auth required because couchdb-init sets chttpd/require_valid_user=true.
       test:
-        [
-          "CMD-SHELL",
-          'curl -fsS -u "$$COUCHDB_USER:$$COUCHDB_PASSWORD" http://localhost:5984/_up || exit 1',
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-
-  couchdb-init:
-    image: curlimages/curl:8.10.1
-    restart: "no"
-    depends_on:
-      couchdb:
-        condition: service_healthy
-    environment:
-      COUCHDB_USER: ${SERVICE_USER_COUCHDB}
-      COUCHDB_PASSWORD: ${SERVICE_PASSWORD_COUCHDB}
-      COUCHDB_DB: ${COUCHDB_DB:-obsidian}
-      # OrbStack injects HTTP_PROXY into all containers; bypass for service-to-service calls.
-      # No-op on Coolify/plain Docker.
-      NO_PROXY: "*"
-      no_proxy: "*"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        HOST="http://couchdb:5984"
-        AUTH="$${COUCHDB_USER}:$${COUCHDB_PASSWORD}"
-        NODE="_local"
-
-        echo "==> waiting for couchdb"
-        until curl -fsS -u "$${AUTH}" "$${HOST}/_up" >/dev/null; do sleep 2; done
-
-        echo "==> single-node cluster setup"
-        curl -fsS -X POST "$${HOST}/_cluster_setup" -u "$${AUTH}" \
-          -H "Content-Type: application/json" \
-          -d "{\"action\":\"enable_single_node\",\"username\":\"$${COUCHDB_USER}\",\"password\":\"$${COUCHDB_PASSWORD}\",\"bind_address\":\"0.0.0.0\",\"port\":5984,\"singlenode\":true}" \
-          || echo "(already configured, continuing)"
-
-        put() {
-          esc=$$(printf '%s' "$$3" | sed 's/\\/\\\\/g; s/"/\\"/g')
-          curl -fsS -X PUT "$${HOST}/_node/$${NODE}/_config/$$1/$$2" \
-            -u "$${AUTH}" -H "Content-Type: application/json" --data-raw "\"$${esc}\"" >/dev/null
-        }
-
-        echo "==> applying LiveSync-required config"
-        put chttpd require_valid_user true
-        put chttpd_auth require_valid_user true
-        put httpd WWW-Authenticate 'Basic realm="couchdb"'
-        put httpd enable_cors true
-        put chttpd enable_cors true
-        put chttpd max_http_request_size 4294967296
-        put couchdb max_document_size 50000000
-        put cors credentials true
-        put cors origins 'app://obsidian.md,capacitor://localhost,http://localhost'
-        put cors methods 'GET,PUT,POST,HEAD,DELETE'
-        put cors headers 'accept,authorization,content-type,origin,referer,x-csrf-token'
-
-        echo "==> creating vault database: $${COUCHDB_DB}"
-        curl -fsS -X PUT "$${HOST}/$${COUCHDB_DB}" -u "$${AUTH}" || echo "(db exists)"
-
-        echo "==> done"
+        - CMD-SHELL
+        - curl -f -u "$${COUCHDB_USER}:$${COUCHDB_PASSWORD}" http://localhost:5984/_up
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
 
 volumes:
   couchdb-data:
-  couchdb-config:

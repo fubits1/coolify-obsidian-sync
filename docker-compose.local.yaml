@@ -1,8 +1,34 @@
-# Local OrbStack override. Coolify does NOT load this file.
+# Standalone local compose for OrbStack / plain Docker validation.
+# Mirrors docker-compose.yaml but replaces Coolify's `volumes: content:` extension
+# (rejected by plain Docker as "additional properties 'content' not allowed")
+# with a normal bind mount of the on-disk ./local.ini.
+#
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.local.yml --env-file .env.local up -d
+#   docker compose -f docker-compose.local.yaml --env-file .env.local up -d
+#
+# NOTE: Coolify deploys docker-compose.yaml, NOT this file.
 
 services:
   couchdb:
+    image: couchdb:3.4.2
+    environment:
+      - COUCHDB_USER=${SERVICE_USER_COUCHDB}
+      - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
+      - MAX_DOCUMENT_SIZE=${MAX_DOCUMENT_SIZE:-52428800}
+      - MAX_HTTP_REQUEST_SIZE=${MAX_HTTP_REQUEST_SIZE:-67108864}
     ports:
       - "5984:5984"
+    volumes:
+      - ./local.ini:/opt/couchdb/etc/local.ini
+      - couchdb-data:/opt/couchdb/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -f -u "$${COUCHDB_USER}:$${COUCHDB_PASSWORD}" http://localhost:5984/_up
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  couchdb-data:
