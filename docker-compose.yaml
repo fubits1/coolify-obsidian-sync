@@ -4,6 +4,16 @@
 # tags: obsidian,couchdb,sync,notes,markdown
 # logo: svgs/obsidian-livesync.svg
 # port: 5984
+#
+# Deviation from upstream PR coollabsio/coolify#9822: the canonical template
+# uses `volumes: - type: bind ... content: |` to inline local.ini. That field
+# is not in the Docker Compose Spec and not documented in Coolify docs. On
+# Coolify v4.1.2 the parser strips `content:` from the Deployable Compose
+# render and skips downstream Traefik-label injection plus SERVICE_* magic-var
+# extraction for this service, leaving the container unrouted (503 at the FQDN).
+# This file ships local.ini as a real file in the repo and bind-mounts it the
+# normal short-form way. Same INI content, no parser surprises. See README.md
+# "Why this deviates from upstream Coolify PR #9822" for the full write-up.
 
 services:
   couchdb:
@@ -12,35 +22,8 @@ services:
       - SERVICE_FQDN_COUCHDB_5984
       - COUCHDB_USER=${SERVICE_USER_COUCHDB}
       - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
-      - MAX_DOCUMENT_SIZE=${MAX_DOCUMENT_SIZE:-52428800}
-      - MAX_HTTP_REQUEST_SIZE=${MAX_HTTP_REQUEST_SIZE:-67108864}
     volumes:
-      - type: bind
-        source: ./local.ini
-        target: /opt/couchdb/etc/local.ini
-        content: |
-          [couchdb]
-          single_node=true
-          max_document_size = ${MAX_DOCUMENT_SIZE}
-
-          [chttpd]
-          require_valid_user = true
-          max_http_request_size = ${MAX_HTTP_REQUEST_SIZE}
-
-          [chttpd_auth]
-          require_valid_user = true
-          authentication_redirect = /_utils/session.html
-
-          [httpd]
-          WWW-Authenticate = Basic realm="couchdb"
-          enable_cors = true
-
-          [cors]
-          origins = app://obsidian.md,capacitor://localhost,http://localhost
-          credentials = true
-          headers = accept, authorization, content-type, origin, referer
-          methods = GET, PUT, POST, HEAD, DELETE
-          max_age = 3600
+      - ./local.ini:/opt/couchdb/etc/local.ini
       - couchdb-data:/opt/couchdb/data
     healthcheck:
       test:

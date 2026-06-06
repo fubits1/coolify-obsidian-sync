@@ -1,12 +1,30 @@
 # Obsidian Self-hosted LiveSync on Coolify
 
-CouchDB backend for the [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) Obsidian plugin, packaged for one-click deployment via [Coolify](https://coolify.io). This compose mirrors the upstream-canonical Coolify service template (open PR [coollabsio/coolify#9822](https://github.com/coollabsio/coolify/pull/9822)) verbatim, plus a local-only override for OrbStack and plain Docker.
+CouchDB backend for the [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) Obsidian plugin, packaged for deployment via [Coolify](https://coolify.io). Derived from the upstream Coolify service template proposed in open PR [coollabsio/coolify#9822](https://github.com/coollabsio/coolify/pull/9822), with one documented deviation (see below). A standalone `docker-compose.local.yaml` covers OrbStack and plain Docker.
 
 This is not Obsidian's first-party paid Sync product (no self-hostable engine exists for that). Self-hosted LiveSync is the community plugin that replicates a vault to a CouchDB you control.
 
+## Why this deviates from upstream Coolify PR #9822
+
+The PR template configures CouchDB via a `volumes: - type: bind ... content: |` block that inlines the entire `local.ini` directly in `docker-compose.yaml`. That `content:` field is not in the [Docker Compose Specification](https://github.com/compose-spec/compose-spec/blob/main/spec.md) and not documented in [Coolify's Docker Compose reference](https://coolify.io/docs/knowledge-base/docker/compose).
+
+Observed on Coolify v4.1.2 (host `peladn`, this deploy): the parser strips `content:` from the Deployable Compose render and then skips downstream Traefik label injection and `SERVICE_*` magic-variable extraction for the affected service. The container deploys and runs healthy but receives no `traefik.http.routers.*` labels. Requests to the allocated FQDN return `HTTP 503 no available server` because Traefik has no backend registered. Manually adding `SERVICE_FQDN_COUCHDB_5984` in the Environment Variables tab gets silently removed on save. Other working Coolify resources on the same host (`uptime-kuma`, `nocodb`) all use short-form bind mounts and receive full label sets, confirming the parser path bails specifically on the `content:` extension rather than on this image or service shape.
+
+This repo therefore ships `local.ini` as a real file at the repo root with byte-identical INI content to the PR's inline block, and bind-mounts it the short form:
+
+```yaml
+volumes:
+  - ./local.ini:/opt/couchdb/etc/local.ini
+  - couchdb-data:/opt/couchdb/data
+```
+
+CouchDB reads the file identically. Coolify pulls the whole repo into the artifact dir at deploy, so the relative bind source resolves. Magic-var extraction runs to completion, Traefik labels attach, the FQDN routes. When upstream PR #9822 ships and Coolify implements `content:` as a supported extension, this repo can revert the volumes block to the PR's form.
+
+The two `MAX_DOCUMENT_SIZE` / `MAX_HTTP_REQUEST_SIZE` env vars that the PR template defined for templating into the inline `content:` block are also dropped, because without the templating they were no-ops. Tune CouchDB sizes by editing `local.ini` directly.
+
 ## What gets deployed
 
-A single `couchdb:3.4.2` service with a `couchdb-data` volume for persistence. Configuration is baked from `local.ini` at start and not persisted in a volume. No init sidecar. Configuration applies via the bind-mounted `local.ini` on boot.
+A single `couchdb:3.4.2` service with a `couchdb-data` named volume and a bind-mounted `local.ini`. No init sidecar. CouchDB applies `local.ini` on boot. The two env vars passed in (`COUCHDB_USER`, `COUCHDB_PASSWORD`) come from Coolify magic vars; the entrypoint writes them into `local.d/docker.ini`.
 
 ## Coolify magic environment variables
 
@@ -17,8 +35,6 @@ Coolify (v4.0.0-beta.411+) auto-generates dynamic values for Docker Compose stac
 | `SERVICE_FQDN_COUCHDB_5984` | FQDN + port marker | Allocates a subdomain on the configured wildcard, injects Traefik labels routing `https://<fqdn>/` to container `:5984`, provisions a Let's Encrypt cert |
 | `SERVICE_USER_COUCHDB` | User | Random 16-char string, persisted across redeploys |
 | `SERVICE_PASSWORD_64_COUCHDB` | Password (64 chars) | Symbol-free 64-char random password, persisted across redeploys |
-| `MAX_DOCUMENT_SIZE` | Optional override | Single doc size in bytes. Default 52428800 (50 MB) |
-| `MAX_HTTP_REQUEST_SIZE` | Optional override | HTTP body size in bytes. Default 67108864 (64 MB) |
 
 The compose references them as:
 
@@ -29,7 +45,7 @@ environment:
   - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
 ```
 
-A bare `SERVICE_FQDN_X_PORT` (no `=value`) signals Coolify to publish that port via Traefik. Coolify writes `local.ini` to the host filesystem at deploy time using its `volumes: ... content:` compose extension. Plain Docker does not honour this, which is why the local override exists.
+A bare `SERVICE_FQDN_X_PORT` (no `=value`) signals Coolify to publish that port via Traefik. Coolify auto-injects `traefik.http.routers.*` labels at deploy time when this var is recognised.
 
 ## Where to read the FQDN, username, and password in Coolify
 
@@ -40,13 +56,14 @@ A bare `SERVICE_FQDN_X_PORT` (no `=value`) signals Coolify to publish that port 
 
 ## Deploy on Coolify
 
-1. New Resource > Docker Compose Empty (or Public Repository if you host this repo in git).
-2. Paste `docker-compose.yaml`, or point at this repo and set Docker Compose Location to `/docker-compose.yaml`.
-3. Coolify auto-detects the `SERVICE_*` vars on the Environment Variables tab. Leave them blank. Coolify generates on first deploy.
-4. Optional: set `MAX_DOCUMENT_SIZE` / `MAX_HTTP_REQUEST_SIZE` if you attach very large files.
-5. Domains tab: confirm the auto-allocated subdomain or replace with your own (then redeploy).
-6. Deploy. Wait for `couchdb` health (approximately 40 s start period plus curl healthcheck).
-7. Confirm at `https://<fqdn>/` the response `{"couchdb":"Welcome","version":"3.4.2",...}`.
+Pre-read: "Why this deviates from upstream Coolify PR #9822" (top of this README) explains why `docker-compose.yaml` carries `local.ini` as a real file rather than inlined via the PR's `content:` extension. Deploy against this repo, not against the PR template verbatim.
+
+1. New Resource → Public Repository → point at this repo, branch `main`, Docker Compose Location `/docker-compose.yaml`. (Docker Compose Empty by paste also works, but requires you to also upload `local.ini` via Coolify Persistent Storage.)
+2. **Save**, then click **Reload Compose File**. Confirm the Environment Variables tab now lists `SERVICE_FQDN_COUCHDB_5984`, `SERVICE_USER_COUCHDB`, `SERVICE_PASSWORD_64_COUCHDB`. If any is missing, the parser bailed — re-check the compose for further deviations.
+3. Tune the FQDN if Coolify's auto-allocated subdomain isn't what you want.
+4. **Deploy.** Wait for `couchdb` health (~40 s start period plus curl healthcheck).
+5. Confirm `curl https://<fqdn>/` returns `{"couchdb":"Welcome","version":"3.4.2",...}` (200) or `401` (which means TLS + routing work, CouchDB just demands auth).
+6. To tune CouchDB sizes: edit `local.ini` directly in this repo, push, redeploy.
 
 Coolify stores `SERVICE_USER_COUCHDB` and `SERVICE_PASSWORD_64_COUCHDB` and reuses them on redeploy. CouchDB hashes the admin password into `_users` on the `couchdb-data` volume. Do not regenerate the password in Coolify after first init or you will lose access. To rotate, change CouchDB's admin directly via Fauxton, then update Coolify env.
 
@@ -192,9 +209,9 @@ The bind-mounted `local.ini` writes the following at boot:
 | Section | Key | Value |
 |---|---|---|
 | `couchdb` | `single_node` | `true` |
-| `couchdb` | `max_document_size` | `${MAX_DOCUMENT_SIZE}` (default 52428800) |
+| `couchdb` | `max_document_size` | `52428800` (50 MB; edit `local.ini` to tune) |
 | `chttpd` | `require_valid_user` | `true` |
-| `chttpd` | `max_http_request_size` | `${MAX_HTTP_REQUEST_SIZE}` (default 67108864) |
+| `chttpd` | `max_http_request_size` | `67108864` (64 MB; edit `local.ini` to tune) |
 | `chttpd_auth` | `require_valid_user` | `true` |
 | `chttpd_auth` | `authentication_redirect` | `/_utils/session.html` |
 | `httpd` | `WWW-Authenticate` | `Basic realm="couchdb"` |
@@ -210,6 +227,8 @@ The bind-mounted `local.ini` writes the following at boot:
 | Symptom | Cause | Fix |
 |---|---|---|
 | Two links in Coolify Links panel, one missing scheme | `SERVICE_FQDN_X` returns domain-only (per [Coolify env-var docs](https://coolify.io/docs/knowledge-base/environment-variables)); Coolify renders both URL and FQDN forms | Use the `https://` one |
+| 503 "no available server" from FQDN; `docker inspect` shows no `traefik.*` labels | Coolify parser bailed on a non-standard compose field (e.g. `volumes: ... content:`) and skipped Traefik-label injection | See "Why this deviates from upstream Coolify PR #9822" at the top of this README |
+| Manually adding `SERVICE_FQDN_COUCHDB_5984` in Coolify Env tab gets removed on save | Same root cause: parser failure prevents Coolify from registering the magic var | Same fix |
 | `_up` returns 401 from anywhere except the healthcheck | `require_valid_user=true` is set; every endpoint needs Basic Auth | Pass `-u user:pass` to curl |
 | Obsidian client reports CORS error | Wrong scheme or origin not in allowlist | Confirm URI uses `https://` and `cors/origins` includes `app://obsidian.md` (desktop) and `capacitor://localhost` (iOS/Android) |
 | Mobile sync hangs on LTE | Incomplete TLS chain at FQDN | `curl -vI https://<fqdn>/` from a mobile-like client; ensure Coolify served full chain |
