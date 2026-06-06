@@ -26,6 +26,8 @@
 services:
   couchdb:
     image: couchdb:3.4.2
+    expose:
+      - "5984"
     environment:
       - COUCHDB_USER=${SERVICE_USER_COUCHDB:-admin}
       - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB:?set in Coolify Env Vars}
