@@ -123,12 +123,22 @@ In the Remote Database wizard or settings:
 | Field | Value |
 |---|---|
 | Remote type | CouchDB |
-| URI | `https://<your-coolify-fqdn>` (or `http://localhost:5984` locally) |
+| URI | Production: `https://<your-coolify-fqdn>`. Local desktop on the same Mac: `http://localhost:5984`. Local mobile or LAN clients: see below. |
 | Username | `SERVICE_USER_COUCHDB` value |
 | Password | `SERVICE_PASSWORD_64_COUCHDB` value |
 | Database name | `obsidian` (or your chosen vault id) |
 
 Click Test Database Connection. All fields should pass.
+
+Local URI per client type:
+
+| Client | URI |
+|---|---|
+| Desktop Obsidian on the Mac running OrbStack | `http://localhost:5984` |
+| Desktop or mobile Obsidian on the same LAN | `http://couchdb.obsidian.orb.local:5984` (OrbStack mDNS, resolves on macOS host and LAN devices on the same network) or `http://<mac-lan-ip>:5984` |
+| Mobile Obsidian over LTE / different network | Expose via Cloudflare Tunnel, ngrok, or Tailscale Funnel. Plain HTTP over the internet will fail CORS preflight from `capacitor://localhost`; use HTTPS. |
+
+Coolify production deploys handle this for you: Traefik fronts the FQDN with a Let's Encrypt cert, so the URI is just `https://<allocated>.<wildcard>` from any device.
 
 ### End-to-End Encryption
 

@@ -1,12 +1,9 @@
-# Obsidian Self-hosted LiveSync, CouchDB backend.
-# Mirrors the upstream-canonical Coolify service template (PR coollabsio/coolify#9822).
-# Deploy target: Coolify (Docker Compose build pack, v4.0.0-beta.411+).
-# For local OrbStack validation see docker-compose.local.yaml + ./local.ini + README.md.
-#
-# Coolify magic env vars:
-#   SERVICE_FQDN_COUCHDB_5984    -> auto FQDN + Traefik route to container :5984
-#   SERVICE_USER_COUCHDB         -> 16-char admin user, persisted across redeploys
-#   SERVICE_PASSWORD_64_COUCHDB  -> 64-char admin password, persisted across redeploys
+# documentation: https://github.com/vrtmrz/obsidian-livesync/blob/main/docs/setup_own_server.md
+# slogan: Self-hosted sync backend for Obsidian LiveSync plugin using CouchDB
+# category: storage
+# tags: obsidian,couchdb,sync,notes,markdown
+# logo: svgs/obsidian-livesync.svg
+# port: 5984
 
 services:
   couchdb:
@@ -15,13 +12,9 @@ services:
       - SERVICE_FQDN_COUCHDB_5984
       - COUCHDB_USER=${SERVICE_USER_COUCHDB}
       - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
-      # Single document size (bytes). Default 50 MB.
       - MAX_DOCUMENT_SIZE=${MAX_DOCUMENT_SIZE:-52428800}
-      # HTTP request body size (bytes). Should sit slightly above MAX_DOCUMENT_SIZE. Default 64 MB.
       - MAX_HTTP_REQUEST_SIZE=${MAX_HTTP_REQUEST_SIZE:-67108864}
     volumes:
-      # Coolify-specific extension: writes `content:` to a host file then bind-mounts it.
-      # Plain Docker and OrbStack ignore `content:`. The local override supplies ./local.ini directly.
       - type: bind
         source: ./local.ini
         target: /opt/couchdb/etc/local.ini
