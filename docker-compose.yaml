@@ -5,23 +5,37 @@
 # logo: svgs/obsidian-livesync.svg
 # port: 5984
 #
-# Deviation from upstream PR coollabsio/coolify#9822: the canonical template
-# uses `volumes: - type: bind ... content: |` to inline local.ini. That field
-# is not in the Docker Compose Spec and not documented in Coolify docs. On
-# Coolify v4.1.2 the parser strips `content:` from the Deployable Compose
-# render and skips downstream Traefik-label injection plus SERVICE_* magic-var
-# extraction for this service, leaving the container unrouted (503 at the FQDN).
-# This file ships local.ini as a real file in the repo and bind-mounts it the
-# normal short-form way. Same INI content, no parser surprises. See README.md
-# "Why this deviates from upstream Coolify PR #9822" for the full write-up.
+# Deploys obsidian-livesync's CouchDB backend on Coolify via the Docker Compose
+# build pack (Public Repository or Docker Compose Empty). Differs from upstream
+# PR coollabsio/coolify#9822 in two deliberate ways:
+#
+# 1. The PR is written for Coolify's built-in service catalog, where the
+#    `SERVICE_FQDN_COUCHDB_5984` magic env var auto-allocates an FQDN and
+#    auto-injects Traefik labels. Deploying the same compose via the Docker
+#    Compose build pack does NOT process those magic vars (per Coolify docs:
+#    "To use Coolify's Proxy (Traefik), you need to set the following labels").
+#    So this file declares the Traefik labels explicitly, parameterised by a
+#    plain `FQDN` env var that the user sets in the Coolify Env Vars tab.
+# 2. The PR uses `volumes: - type: bind ... content: |` (a field not in the
+#    Docker Compose Spec and not in Coolify docs) to inline local.ini. Coolify
+#    v4.1.2's parser strips that field. This repo ships local.ini as a real
+#    file in the repo and bind-mounts it the short form.
+#
+# See README.md for the full write-up.
 
 services:
   couchdb:
     image: couchdb:3.4.2
     environment:
-      - SERVICE_FQDN_COUCHDB_5984
-      - COUCHDB_USER=${SERVICE_USER_COUCHDB}
-      - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB}
+      - COUCHDB_USER=${SERVICE_USER_COUCHDB:-admin}
+      - COUCHDB_PASSWORD=${SERVICE_PASSWORD_64_COUCHDB:?set in Coolify Env Vars}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.couchdb.rule=Host(`${FQDN:?set FQDN in Coolify Env Vars to your couchdb domain, e.g. obsidian.example.com}`)
+      - traefik.http.routers.couchdb.entrypoints=https
+      - traefik.http.routers.couchdb.tls=true
+      - traefik.http.routers.couchdb.tls.certresolver=letsencrypt
+      - traefik.http.services.couchdb.loadbalancer.server.port=5984
     volumes:
       - ./local.ini:/opt/couchdb/etc/local.ini
       - couchdb-data:/opt/couchdb/data
