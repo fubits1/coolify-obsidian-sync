@@ -1,0 +1,8 @@
+# Local OrbStack override. Coolify does NOT load this file.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml --env-file .env.local up -d
+
+services:
+  couchdb:
+    ports:
+      - "5984:5984"
